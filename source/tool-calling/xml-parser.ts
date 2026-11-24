@@ -275,8 +275,8 @@ export class XMLToolCallParser {
 	 * Rejects partial matches, malformed syntax, and invalid structures
 	 */
 	private static isValidToolCall(fullMatch: string, toolName: string): boolean {
-		// Reject common HTML tags that might be in model output
-		const htmlTags = [
+		// Reject markup that might appear in model output.
+		const markupTags = [
 			'div',
 			'span',
 			'p',
@@ -310,8 +310,9 @@ export class XMLToolCallParser {
 			'footer',
 			'nav',
 			'aside',
+			'think',
 		];
-		if (htmlTags.includes(toolName.toLowerCase())) {
+		if (markupTags.includes(toolName.toLowerCase())) {
 			return false;
 		}
 

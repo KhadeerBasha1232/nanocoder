@@ -392,10 +392,11 @@ test('whenever-no-native checks a text tool call left open on a native turn', as
 	]);
 });
 
-test('stripThinkTags drops think blocks from the recorded text', async t => {
+test('stripThinkTags drops leading reasoning and keeps literal tags in the recorded text', async t => {
 	const answers: string[] = [];
+	const answer = 'The answer includes the literal <think> and </think> tags.';
 	const {run} = setup(
-		[text('<think>pondering</think>The answer.')],
+		[text(`<think>pondering</think>${answer}`)],
 		{
 			onFinalAnswer: ({content}) => {
 				answers.push(content);
@@ -405,7 +406,7 @@ test('stripThinkTags drops think blocks from the recorded text', async t => {
 		{policy: {stripThinkTags: true}},
 	);
 	await run();
-	t.deepEqual(answers, ['The answer.']);
+	t.deepEqual(answers, [answer]);
 });
 
 test('maxToolCallsPerTurn keeps only the first calls', async t => {

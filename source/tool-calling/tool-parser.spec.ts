@@ -563,21 +563,60 @@ Here is my response after some thinking.`;
 	}
 });
 
-test('parseToolCalls: strips incomplete opening <think> tags (streaming)', t => {
-	const content = `Here is my response.
-
-<think>
+test('parseToolCalls: hides an incomplete leading reasoning block', t => {
+	const content = `<think>
 I'm still thinking about this...`;
 
 	const result = parseToolCalls(content);
 
 	t.true(result.success);
 	if (result.success) {
-		t.notRegex(result.cleanedContent, /<think>/);
-		t.regex(result.cleanedContent, /Here is my response/);
-		// The incomplete thinking content should be removed
-		t.notRegex(result.cleanedContent, /still thinking/);
+		t.is(result.cleanedContent, '');
+		t.deepEqual(result.toolCalls, []);
 	}
+});
+
+test('parseToolCalls: preserves literal think tags in assistant prose', t => {
+	const reply =
+		'Use the <think> tag to reason. A complete example is <think>example</think>.';
+	const result = parseToolCalls(`<think>Leading reasoning</think>\n\n${reply}`);
+	t.like(result, {success: true, cleanedContent: reply, toolCalls: []});
+});
+
+test('parseToolCalls: keeps literal think tags inside XML tool arguments', t => {
+	const body = '<think>example</think> followed by a literal <think>';
+	const result = parseToolCalls(
+		`<write_file><path>doc.md</path><content>${body}</content></write_file>`,
+		['write_file'],
+	);
+	t.true(result.success);
+	if (result.success) {
+		t.deepEqual(result.toolCalls[0]?.function.arguments, {
+			path: 'doc.md',
+			content: body,
+		});
+	}
+});
+
+test('parseToolCalls: keeps literal think tags inside JSON tool arguments', t => {
+	const body = 'Document the literal <think> and </think> tags.';
+	const result = parseToolCalls(
+		JSON.stringify({name: 'write_file', arguments: {path: 'doc.md', content: body}}),
+		['write_file'],
+	);
+	t.true(result.success);
+	if (result.success) {
+		t.deepEqual(result.toolCalls[0]?.function.arguments, {
+			path: 'doc.md',
+			content: body,
+		});
+	}
+});
+
+test('parseToolCalls: keeps a tool-shaped example inside literal think markup as prose', t => {
+	const reply = 'Example: <think><probe_status><item>sample</item></probe_status></think>.';
+	const result = parseToolCalls(reply, ['probe_status']);
+	t.like(result, {success: true, cleanedContent: reply, toolCalls: []});
 });
 
 test('parseToolCalls: handles think tags with tool calls', t => {

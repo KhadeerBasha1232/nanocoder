@@ -7,17 +7,26 @@ import type {ToolCall} from '@/types/index';
 import {ensureString} from '@/utils/type-helpers';
 
 /**
- * Strip  tags from content (some models output thinking that shouldn't be shown)
+ * Remove leading reasoning blocks emitted as plain text by some models.
+ * Tags in the reply body may be literal prose, code, or tool arguments.
  */
 export function stripThinkTags(content: string): string {
-	return (
-		content
-			// Strip complete  blocks
-			.replace(/<think>[\s\S]*?<\/think>/gi, '')
-			// Strip orphaned/incomplete think tags
-			.replace(/<think>[\s\S]*$/gi, '')
-			.replace(/<\/think>/gi, '')
-	);
+	const leadingTag = /\s*<(\/?)think>/iy;
+	const closingTag = /<\/think>/gi;
+	let offset = 0;
+
+	for (;;) {
+		leadingTag.lastIndex = offset;
+		const tag = leadingTag.exec(content);
+		if (!tag) return offset === 0 ? content : content.slice(offset);
+
+		offset = leadingTag.lastIndex;
+		if (tag[1]) continue;
+
+		closingTag.lastIndex = offset;
+		if (!closingTag.exec(content)) return '';
+		offset = closingTag.lastIndex;
+	}
 }
 
 /**
@@ -353,6 +362,68 @@ function parseFunctionTagToolCalls(content: string): {
 }
 
 /**
+ * Keep literal think markup visible without parsing any tool-like text inside
+ * it. Tags inside complete calls belong to their arguments and stay in place.
+ */
+function protectThinkText(content: string): {
+	text: string;
+	restore: (text: string) => string;
+} {
+	const tags = /<\/?think>/gi;
+	if (!/<think>/i.test(content)) return {text: content, restore: text => text};
+
+	const callRanges = [
+		...XMLToolCallParser.findToolCallRanges(content),
+		...parseFunctionTagToolCalls(content).ranges,
+		...parseJSONToolCalls(content).ranges,
+	].sort(([left], [right]) => left - right);
+
+	const prefix = `\u0000${generateToolCallId()}:`;
+	const blocks: string[] = [];
+	let text = '';
+	let copiedThrough = 0;
+	let opening: number | undefined;
+	let callIndex = 0;
+
+	for (const tag of content.matchAll(tags)) {
+		const start = tag.index;
+		while (callRanges[callIndex]?.[1] <= start) callIndex++;
+		const call = callRanges[callIndex];
+		if (call && call[0] <= start) continue;
+
+		if (tag[0][1] !== '/') {
+			opening ??= start;
+		} else if (opening !== undefined) {
+			const end = start + tag[0].length;
+			text +=
+				content.slice(copiedThrough, opening) +
+				prefix +
+				blocks.length +
+				'\u0000';
+			blocks.push(content.slice(opening, end));
+			copiedThrough = end;
+			opening = undefined;
+		}
+	}
+
+	if (opening !== undefined) {
+		text +=
+			content.slice(copiedThrough, opening) + prefix + blocks.length + '\u0000';
+		blocks.push(content.slice(opening));
+		copiedThrough = content.length;
+	}
+	if (blocks.length === 0) return {text: content, restore: text => text};
+	return {
+		text: text + content.slice(copiedThrough),
+		restore: text =>
+			text.replaceAll(
+				new RegExp(`${prefix}(\\d+)\u0000`, 'g'),
+				(_, index) => blocks[Number(index)],
+			),
+	};
+}
+
+/**
  * Blank out valid function-tag / JSON tool calls before the XML scan, so XML
  * quoted inside their arguments (e.g. a write_file of docs containing
  * `<execute_bash>...`) is not mistaken for a separate call. Spans enclosed by
@@ -423,14 +494,14 @@ export function stripEmbeddedToolCallText(
 	content: unknown,
 	toolNames: readonly string[],
 ): string {
-	const contentStr = ensureString(content);
+	const {text: contentStr, restore} = protectThinkText(ensureString(content));
 	const afterXml = XMLToolCallParser.removeToolCallsFromContent(
 		contentStr,
 		toolNames,
 	);
 	const {cleanedContent: afterFnTag} = parseFunctionTagToolCalls(afterXml);
 	const {cleanedContent} = parseJSONToolCalls(afterFnTag);
-	return normalizeWhitespace(cleanedContent);
+	return restore(normalizeWhitespace(cleanedContent));
 }
 
 /**
@@ -453,8 +524,10 @@ export function parseToolCalls(
 	// 1. Safety Coercion
 	const contentStr = ensureString(content);
 
-	// Strip tags first - some models (like GLM-4) emit these for chain-of-thought
-	const strippedContent = stripThinkTags(contentStr);
+	// Remove the reasoning prefix before looking for tool calls.
+	const {text: strippedContent, restore} = protectThinkText(
+		stripThinkTags(contentStr),
+	);
 
 	const fnTagResult = parseFunctionTagToolCalls(strippedContent);
 	let jsonResult = parseJSONToolCalls(strippedContent);
@@ -520,7 +593,7 @@ export function parseToolCalls(
 			return {
 				success: true,
 				toolCalls: convertedCalls,
-				cleanedContent,
+				cleanedContent: restore(cleanedContent),
 			};
 		}
 	}
@@ -530,7 +603,7 @@ export function parseToolCalls(
 		return {
 			success: true,
 			toolCalls: fnTagResult.toolCalls,
-			cleanedContent: normalizeWhitespace(fnTagResult.cleanedContent),
+			cleanedContent: restore(normalizeWhitespace(fnTagResult.cleanedContent)),
 		};
 	}
 
@@ -539,7 +612,7 @@ export function parseToolCalls(
 		return {
 			success: true,
 			toolCalls: jsonResult.toolCalls,
-			cleanedContent: normalizeWhitespace(jsonResult.cleanedContent),
+			cleanedContent: restore(normalizeWhitespace(jsonResult.cleanedContent)),
 		};
 	}
 
@@ -576,6 +649,6 @@ export function parseToolCalls(
 	return {
 		success: true,
 		toolCalls: [],
-		cleanedContent: normalizeWhitespace(strippedContent),
+		cleanedContent: restore(normalizeWhitespace(strippedContent)),
 	};
 }
